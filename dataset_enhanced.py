@@ -7,7 +7,6 @@ import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
 
-# 自定义数据集类
 class MyDataset(Dataset):
     def __init__(self, root_dir, transform=None, train=True):
         self.root_dir = root_dir
@@ -18,7 +17,6 @@ class MyDataset(Dataset):
         self.img_files = sorted([f for f in os.listdir(img_dir) if f.endswith('.tif')])
         self.label_files = sorted([f for f in os.listdir(label_dir) if f.endswith('.tif')])
 
-        # 数据增强
         if train:
             self.transform = A.Compose([
                 A.RandomRotate90(p=0.5),
@@ -35,7 +33,6 @@ class MyDataset(Dataset):
         return len(self.img_files)
 
     def normalize_data(self, data):
-        # 添加数据标准化
         mean = np.mean(data)
         std = np.std(data)
         return (data - mean) / (std + 1e-8)
@@ -55,11 +52,9 @@ class MyDataset(Dataset):
         sar_data = img[:, :, 10:]
         optical_data = img[:, :, :10]
 
-        # 数据标准化
         sar_data = self.normalize_data(sar_data)
         optical_data = self.normalize_data(optical_data)
 
-        # 数据增强
         if self.transform and self.train:
             augmented = self.transform(image=np.concatenate([optical_data, sar_data], axis=-1), mask=label)
             combined_data = augmented['image']
@@ -67,7 +62,6 @@ class MyDataset(Dataset):
             optical_data = combined_data[:, :, :10]
             sar_data = combined_data[:, :, 10:]
 
-        # 转换为PyTorch Tensor
         sar_data = torch.from_numpy(sar_data).float().permute(2, 0, 1)
         optical_data = torch.from_numpy(optical_data).float().permute(2, 0, 1)
         label = torch.from_numpy(label).long()
@@ -77,4 +71,5 @@ class MyDataset(Dataset):
 
 # 创建数据集实例
 root_dir = './Rice/test'
+
 dataset = MyDataset(root_dir)
