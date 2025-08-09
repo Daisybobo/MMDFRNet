@@ -1,7 +1,7 @@
 import torch
 
 def calculate_metrics(pred, target):
-    """计算分割任务的评价指标"""
+
     pred = pred.float()
     target = target.float()
 
@@ -33,4 +33,5 @@ def calculate_metrics(pred, target):
         'recall': recall.item(),
         'f1': f1.item(),
         'accuracy': accuracy.item()
+
     }
