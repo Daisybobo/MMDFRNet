@@ -7,7 +7,6 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 import random
 import numpy as np
 
-# 导入拆分后的模块
 from data_loader import get_data_loaders
 from loss import DeepSupervisionLoss
 from metrics import calculate_metrics
@@ -133,7 +132,6 @@ def main():
         val_loss, val_metrics = validate(model, val_loader, criterion, device)
         scheduler.step(val_metrics['iou'])
 
-        # 保存历史记录
         history['train_loss'].append(train_loss)
         history['val_loss'].append(val_loss)
         history['train_metrics'].append(train_metrics)
@@ -143,4 +141,5 @@ def main():
 
 
 if __name__ == '__main__':
+
     main()
