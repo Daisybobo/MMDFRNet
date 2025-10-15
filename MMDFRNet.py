@@ -49,42 +49,65 @@ class AttentionModule(nn.Module):
         return out
 
 
+class CrossModalAttention(nn.Module):
+    """cross-modal attention module for the fusion of SAR and optical data"""
+
+    def __init__(self, in_channels):
+        super(CrossModalAttention, self).__init__()
+        self.query_conv = nn.Conv2d(in_channels, in_channels // 8, kernel_size=1)
+        self.key_conv = nn.Conv2d(in_channels, in_channels // 8, kernel_size=1)
+        self.value_conv = nn.Conv2d(in_channels, in_channels, kernel_size=1)
+
+        self.softmax = nn.Softmax(dim=-1)
+        self.gamma = nn.Parameter(torch.zeros(1))  
+
+    def forward(self, x, y):
+        """
+        x: original modal feature
+        y: target modal feature 
+        """
+        batch_size, channels, height, width = y.size()
+
+        query = self.query_conv(y).view(batch_size, -1, height * width).permute(0, 2, 1)  # (B, H*W, C/8)
+        key = self.key_conv(x).view(batch_size, -1, height * width)  # (B, C/8, H*W)
+        value = self.value_conv(x).view(batch_size, -1, height * width)  # (B, C, H*W)
+
+        energy = torch.bmm(query, key)  # (B, H*W, H*W)
+        attention = self.softmax(energy)  # (B, H*W, H*W)
+
+        out = torch.bmm(value, attention.permute(0, 2, 1))  # (B, C, H*W)
+        out = out.view(batch_size, channels, height, width)  # (B, C, H, W)
+
+        out = self.gamma * out + y
+        return out
+
+
 class MultiModalFusion(nn.Module):
-    """
-    Multi-modal fusion module for SAR and optical features
-    Includes feature recalibration (attention gates) and residual connection
-    """
-
-    def __init__(self, spatial_channels, temporal_channels):
+    def __init__(self, optical_channels, sar_channels):
         super(MultiModalFusion, self).__init__()
-        total_channels = spatial_channels + temporal_channels
+        self.optical_channels = optical_channels
+        self.sar_channels = sar_channels
+        total_channels = optical_channels + sar_channels
 
-        # Attention gate for optical features
-        self.optical_gate = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),  # Global average pooling
-            nn.Conv2d(spatial_channels, spatial_channels, kernel_size=1, bias=False),
+        self.optical_self_gate = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(optical_channels, optical_channels, kernel_size=1, bias=False),
             nn.ReLU(inplace=True),
-            nn.Conv2d(spatial_channels, spatial_channels, kernel_size=1, bias=False),
+            nn.Conv2d(optical_channels, optical_channels, kernel_size=1, bias=False),
             nn.Sigmoid()
         )
 
-        # Attention gate for SAR features
-        self.sar_gate = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),  # Global average pooling
-            nn.Conv2d(temporal_channels, temporal_channels, kernel_size=1, bias=False),
+        self.sar_self_gate = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(sar_channels, sar_channels, kernel_size=1, bias=False),
             nn.ReLU(inplace=True),
-            nn.Conv2d(temporal_channels, temporal_channels, kernel_size=1, bias=False),
+            nn.Conv2d(sar_channels, sar_channels, kernel_size=1, bias=False),
             nn.Sigmoid()
         )
 
-        # Feature enhancement after concatenation
-        self.enhance = nn.Sequential(
-            nn.Conv2d(total_channels, total_channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(total_channels),
-            nn.ReLU(inplace=True)
-        )
+        self.optical_guided_by_sar = CrossModalAttention(optical_channels)
+        self.sar_guided_by_optical = CrossModalAttention(sar_channels)
 
-        # Fusion convolution layers
         self.fusion = nn.Sequential(
             nn.Conv2d(total_channels, total_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(total_channels),
@@ -93,7 +116,6 @@ class MultiModalFusion(nn.Module):
             nn.BatchNorm2d(total_channels)
         )
 
-        # Residual connection for stable training
         self.residual = nn.Sequential(
             nn.Conv2d(total_channels, total_channels, kernel_size=1, bias=False),
             nn.BatchNorm2d(total_channels)
@@ -102,28 +124,27 @@ class MultiModalFusion(nn.Module):
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
-        batch_size, channels, h, w = x.size()
-        split_size = channels // 2  # Assumes equal channel split between modalities
+        sar_features = x[:, :self.sar_channels]
+        optical_features = x[:, self.sar_channels:]
 
-        # Split input into SAR and optical features
-        sar_features = x[:, :split_size]
-        optical_features = x[:, split_size:]
+        # self-attention enhancement
+        sar_self_attention = self.sar_self_gate(sar_features)
+        optical_self_attention = self.optical_self_gate(optical_features)
 
-        # Apply modality-specific attention
-        optical_attention = self.optical_gate(optical_features)
-        sar_attention = self.sar_gate(sar_features)
+        enhanced_sar = sar_features * sar_self_attention
+        enhanced_optical = optical_features * optical_self_attention
 
-        # Enhance features with attention weights
-        enhanced_optical = optical_features * optical_attention
-        enhanced_sar = sar_features * sar_attention
+        # cross-modal attention fusion
+        optical_guided = self.optical_guided_by_sar(enhanced_sar, enhanced_optical)
+        sar_guided = self.sar_guided_by_optical(enhanced_optical, enhanced_sar)
 
-        # Combine and process features
-        combined = torch.cat([enhanced_optical, enhanced_sar], dim=1)
-        enhanced = self.enhance(combined)
+        # feature concatenate
+        combined = torch.cat([sar_guided, optical_guided], dim=1)
 
-        # Fusion with residual connection
-        out = self.fusion(enhanced)
+        # fusion processing
+        out = self.fusion(combined)
         residual = self.residual(combined)
+
         out = self.relu(out + residual)
 
         return out
@@ -557,4 +578,5 @@ if __name__ == "__main__":
     output = model(sar_input, optical_input)
     print(f"Input SAR shape: {sar_input.shape}")
     print(f"Input Optical shape: {optical_input.shape}")
+
     print(f"Output shape: {output.shape}")
